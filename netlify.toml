@@ -1,0 +1,11 @@
+[build]
+  # Es gibt kein Frontend, wir bauen einfach gar nichts
+  command = "npm run build || echo 'no build'"
+  publish = "public"
+  functions = "netlify/functions"
+
+# Optional: kleiner Dummy-Redirect für Root
+[[redirects]]
+  from = "/"
+  to = "/.netlify/functions/health"
+  status = 200
