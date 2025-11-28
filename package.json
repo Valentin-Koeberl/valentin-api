@@ -1,0 +1,11 @@
+{
+  "name": "valentin-api",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@netlify/blobs": "^6.3.0"
+  }
+}
+

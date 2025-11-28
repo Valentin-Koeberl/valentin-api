@@ -9,3 +9,9 @@
   from = "/"
   to = "/.netlify/functions/health"
   status = 200
+
+[[redirects]]
+  from = "/chat"
+  to = "/.netlify/functions/chat"
+  status = 200
+  force = true
