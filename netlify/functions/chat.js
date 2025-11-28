@@ -108,15 +108,25 @@ exports.handler = async (event) => {
     if (!response.ok) {
       const errorBody = await maybeJson(response);
       console.error("OpenAI API error:", errorBody || response.statusText);
+    
+      // Versuche, die echte OpenAI-Fehlermeldung rauszuziehen
+      const openAiMessage =
+        (errorBody && errorBody.error && errorBody.error.message) ||
+        (typeof errorBody === "string" ? errorBody : null) ||
+        response.statusText;
+    
       return {
         statusCode: response.status,
         headers: defaultHeaders,
         body: JSON.stringify({
-          error: "Upstream OpenAI API error",
-          details: errorBody,
+          // dem User was Sinnvolles anzeigen
+          error: openAiMessage || "Upstream OpenAI API error",
+          // optional: für Debugging
+          raw: errorBody,
         }),
       };
     }
+    
 
     const data = await response.json();
     return {
@@ -263,3 +273,4 @@ async function maybeJson(response) {
     return text;
   }
 }
+
