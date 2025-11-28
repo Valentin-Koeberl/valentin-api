@@ -18,6 +18,7 @@ const defaultHeaders = {
 };
 
 exports.handler = async (event) => {
+  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -26,6 +27,7 @@ exports.handler = async (event) => {
     };
   }
 
+  // Only POST allowed
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
@@ -42,6 +44,7 @@ exports.handler = async (event) => {
     };
   }
 
+  // Parse JSON body
   let payload;
   try {
     payload = JSON.parse(event.body || "{}");
@@ -62,23 +65,32 @@ exports.handler = async (event) => {
     };
   }
 
+  // Identify user for rate limiting (userId > IP > anonymous)
   const userIdentifier =
     (typeof payload.userId === "string" && payload.userId.trim()) ||
     getClientIp(event) ||
     "anonymous";
+
   const hashedUser = crypto
     .createHash("sha256")
     .update(userIdentifier)
     .digest("hex");
 
+  // Rate limit – aber fail-safe: wenn Blobs nicht gehen, kein harter Fehler
   try {
     await enforceRateLimit(hashedUser);
   } catch (rateErr) {
-    return {
-      statusCode: rateErr.statusCode || 429,
-      headers: defaultHeaders,
-      body: JSON.stringify({ error: rateErr.message }),
-    };
+    // Hier nur echte Rate-Limit-Fehler (429), nicht Blob-Konfig-Fehler
+    if (rateErr.statusCode) {
+      return {
+        statusCode: rateErr.statusCode,
+        headers: defaultHeaders,
+        body: JSON.stringify({ error: rateErr.message }),
+      };
+    }
+
+    // Falls irgendwas anderes schiefgeht: Rate Limit deaktivieren, aber nicht crashen
+    console.warn("Rate limiting disabled due to error:", rateErr);
   }
 
   const openAiRequest = buildOpenAiRequest(payload, userMessage);
@@ -136,14 +148,41 @@ function getClientIp(event) {
   return event.headers["client-ip"] || event.headers["x-real-ip"] || null;
 }
 
+/**
+ * Rate Limiting mit Netlify Blobs, aber:
+ * - Wenn Blobs nicht verfügbar/konfiguriert sind → wirf KEINEN 500er,
+ *   sondern logge nur und lass die Anfrage durch.
+ */
 async function enforceRateLimit(hashedUser) {
-  const store = getStore({ name: RATE_LIMIT_STORE });
-  const key = `user-${hashedUser}`;
+  let store;
+  try {
+    // WICHTIG: getStore("name") – nicht getStore({ name })
+    store = getStore(RATE_LIMIT_STORE);
+  } catch (err) {
+    // Genau hier kam vorher deine Fehlermeldung her
+    console.warn(
+      "Netlify Blobs not configured; skipping rate limiting (store init failed):",
+      err && err.message ? err.message : err
+    );
+    return; // kein Rate Limit, aber auch kein Crash
+  }
 
-  const record =
-    (await store.get(key, { type: "json" }).catch(() => null)) || null;
+  const key = `user-${hashedUser}`;
   const now = Date.now();
 
+  let record = null;
+  try {
+    record =
+      (await store.get(key, { type: "json" }).catch(() => null)) || null;
+  } catch (err) {
+    console.warn(
+      "Failed to read from Netlify Blobs; skipping rate limiting:",
+      err && err.message ? err.message : err
+    );
+    return;
+  }
+
+  // Noch gültiges Fenster
   if (record && record.resetAt && Number(record.resetAt) > now) {
     if (record.count >= RATE_LIMIT) {
       const msLeft = record.resetAt - now;
@@ -155,23 +194,39 @@ async function enforceRateLimit(hashedUser) {
       throw error;
     }
 
-    await store.set(
-      key,
-      JSON.stringify({
-        count: record.count + 1,
-        resetAt: record.resetAt,
-      })
-    );
+    // Counter erhöhen
+    try {
+      await store.set(
+        key,
+        JSON.stringify({
+          count: record.count + 1,
+          resetAt: record.resetAt,
+        })
+      );
+    } catch (err) {
+      console.warn(
+        "Failed to update Netlify Blobs; skipping further rate limiting:",
+        err && err.message ? err.message : err
+      );
+    }
     return;
   }
 
-  await store.set(
-    key,
-    JSON.stringify({
-      count: 1,
-      resetAt: now + RATE_LIMIT_WINDOW_MS,
-    })
-  );
+  // Neues Zeitfenster anlegen
+  try {
+    await store.set(
+      key,
+      JSON.stringify({
+        count: 1,
+        resetAt: now + RATE_LIMIT_WINDOW_MS,
+      })
+    );
+  } catch (err) {
+    console.warn(
+      "Failed to initialize Netlify Blobs record; skipping rate limiting:",
+      err && err.message ? err.message : err
+    );
+  }
 }
 
 function buildOpenAiRequest(payload, userMessage) {
@@ -208,4 +263,3 @@ async function maybeJson(response) {
     return text;
   }
 }
-
